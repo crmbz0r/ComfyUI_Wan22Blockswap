@@ -14,8 +14,8 @@ permissions:
 jobs:
   publish-node:
     name: Publish Custom Node to registry
-    runs-on: ubuntu-latest
-    if: ${{ github.repository_owner == 'orssorbit' }}
+    runs-on: ubuntu-latest, windows-latest
+    if: ${{ github.repository_owner == 'crmbz0r' }}
     steps:
       - name: Check out code
         uses: actions/checkout@v4

@@ -1,14 +1,14 @@
 [project]
-name = "wanblockswap"
-description = "This is a simple Wan block swap node for ComfyUI native nodes, works by swapping upto 40 blocks to the CPU to reduce VRAM."
-version = "1.0.0"
+name = "Wan22Blockswap"
+description = "This is an updated Wan 2.2 block swap node for ComfyUI native nodes, works by swapping upto 40 blocks to the CPU to reduce VRAM."
+version = "0.0.1"
 license = {file = "LICENSE"}
 
 [project.urls]
-Repository = "https://github.com/orssorbit/ComfyUI-wanBlockswap"
+Repository = "https://github.com/crmbz0r/ComfyUI-wan22Blockswap"
 #  Used by Comfy Registry https://comfyregistry.org
 
 [tool.comfy]
-PublisherId = "orssorbit"
-DisplayName = "ComfyUI-wanBlockswap"
+PublisherId = "crmbz0r"
+DisplayName = "ComfyUI-wan22Blockswap"
 Icon = ""

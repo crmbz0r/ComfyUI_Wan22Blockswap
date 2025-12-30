@@ -1,0 +1,58 @@
+[
+  {
+    "model_path": "G:\\comfyui-sage\\ComfyUI_portable\\ComfyUI\\models\\unet\\DasiwaWAN22I2V14BTastysinV8_q5High.gguf",
+    "blocks_to_swap": 0,
+    "gpu_savings_mb": 0.0,
+    "gpu_savings_percent": 0.0,
+    "cpu_increase_mb": 409.48,
+    "cpu_increase_percent": 10.1,
+    "time_difference_s": 564.16,
+    "time_difference_percent": 8656.6,
+    "memory_no_swap": {
+      "initial_gpu": {
+        "allocated_mb": 0.0,
+        "reserved_mb": 0.0,
+        "total_mb": 0.0
+      },
+      "peak_gpu": {
+        "allocated_mb": 18444.0,
+        "reserved_mb": 18452.0,
+        "total_mb": 36896.0
+      },
+      "gpu_increase_mb": 36896.0,
+      "initial_cpu": {
+        "rss_mb": 512.88,
+        "vms_mb": 1371.0
+      },
+      "peak_cpu": {
+        "rss_mb": 4572.1,
+        "vms_mb": 20191.92
+      },
+      "cpu_increase_mb": 4059.22,
+      "load_time_seconds": 6.52
+    },
+    "memory_with_swap": {
+      "initial_gpu": {
+        "allocated_mb": 0.0,
+        "reserved_mb": 0.0,
+        "total_mb": 0.0
+      },
+      "peak_gpu": {
+        "allocated_mb": 18444.0,
+        "reserved_mb": 18452.0,
+        "total_mb": 36896.0
+      },
+      "gpu_increase_mb": 36896.0,
+      "initial_cpu": {
+        "rss_mb": 732.14,
+        "vms_mb": 1703.81
+      },
+      "peak_cpu": {
+        "rss_mb": 5200.84,
+        "vms_mb": 20865.08
+      },
+      "cpu_increase_mb": 4468.7,
+      "load_time_seconds": 570.68
+    }
+  }
+]
