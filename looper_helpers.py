@@ -10,6 +10,9 @@ Key Functions:
 - cleanup_loop_blockswap: Comprehensive cleanup between loop iterations
 - validate_tensor_consistency: Ensure tensor device/dtype alignment
 - reset_model_blockswap_state: Clear persistent tracking state
+- start_blockswap_session: Start a new BlockSwap session for multi-loop workflows
+- end_blockswap_session: End a BlockSwap session and perform final cleanup
+- update_session_loop_state: Update session loop state
 
 These helpers address the 5 root causes of loop degradation by ensuring proper
 state isolation, cleanup, and validation between iterations.
@@ -26,6 +29,11 @@ from comfy.model_patcher import ModelPatcher
 from .block_manager import BlockSwapTracker, BlockManager
 from .callbacks import lazy_load_callback, cleanup_callback
 from .utils import log_debug, sync_gpu, clear_device_caches
+from .model_tracker import (
+    BlockSwapModelTracker,
+    CleanupMode,
+    CleanupDecision,
+)
 
 
 def prepare_model_for_loop(
@@ -38,6 +46,7 @@ def prepare_model_for_loop(
     vace_blocks_to_swap: int,
     prefetch_blocks: int,
     block_swap_debug: bool = False,
+    session_id: Optional[str] = None,
 ) -> ModelPatcher:
     """
     Prepare a model for a specific loop iteration with fresh BlockSwap configuration.
@@ -45,6 +54,9 @@ def prepare_model_for_loop(
     This function clones the input model and registers fresh callbacks with a new
     BlockSwapTracker, ensuring clean state entry for each loop iteration. This
     prevents model state pollution and callback double-execution issues.
+
+    When a session_id is provided, the function integrates with BlockSwapModelTracker
+    to enable smart cleanup decisions across loop iterations.
 
     Args:
         model (ModelPatcher): The input model to prepare for the loop
@@ -56,6 +68,7 @@ def prepare_model_for_loop(
         vace_blocks_to_swap (int): VACE blocks to swap (0=auto detection)
         prefetch_blocks (int): Blocks to prefetch ahead for pipeline
         block_swap_debug (bool): Enable debug logging
+        session_id (Optional[str]): Session ID for smart cleanup tracking
 
     Returns:
         ModelPatcher: A cloned model with fresh BlockSwap configuration
@@ -70,6 +83,28 @@ def prepare_model_for_loop(
     if blocks_to_swap < 0:
         raise ValueError("blocks_to_swap must be non-negative")
 
+    # Get model tracker for smart cleanup
+    tracker_singleton = BlockSwapModelTracker.get_instance()
+    model_id = id(model.model)
+
+    # Get patches UUID for change detection
+    patches_uuid = getattr(model, 'patches_uuid', None)
+    if patches_uuid is not None:
+        patches_uuid = str(patches_uuid)
+
+    # Check if we should skip preparation (already prepared with same config)
+    if session_id and tracker_singleton.should_skip_preparation(
+        model_id, session_id, blocks_to_swap, patches_uuid
+    ):
+        if block_swap_debug:
+            print(f"[BlockSwap] Loop {loop_index+1}: Model already prepared, skipping")
+        # Increment reference count for this loop
+        try:
+            tracker_singleton.increment_reference_count(model_id, session_id)
+        except (KeyError, ValueError):
+            pass  # Model may not be registered yet
+        return model  # Return original, not clone
+
     if block_swap_debug:
         print(f"[BlockSwap] Loop {loop_index+1}: Preparing model with {blocks_to_swap} blocks to swap")
 
@@ -82,8 +117,28 @@ def prepare_model_for_loop(
     if block_swap_debug:
         print(f"[BlockSwap] Loop {loop_index+1}: Model cloned successfully")
 
+    # Register model with tracker if session provided
+    if session_id:
+        # Use the cloned model's id since that's what will be used
+        clone_model_id = id(model_copy.model)
+        try:
+            tracker_singleton.register_model(
+                model_id=clone_model_id,
+                session_id=session_id,
+                blocks_to_swap=blocks_to_swap,
+                patches_uuid=patches_uuid,
+            )
+            if block_swap_debug:
+                print(f"[BlockSwap] Loop {loop_index+1}: Model registered with tracker")
+        except ValueError as e:
+            if block_swap_debug:
+                print(f"[BlockSwap] Loop {loop_index+1}: Tracker registration warning: {e}")
+
     # Create a fresh BlockSwapTracker for this loop iteration
     tracker = create_fresh_blockswap_tracker(blocks_to_swap)
+
+    # Store session_id in tracker for cleanup callback access
+    tracker.session_id = session_id
 
     # Attach the fresh tracker to the model
     model_copy.attachments['blockswap_tracking'] = tracker
@@ -163,6 +218,7 @@ def cleanup_loop_blockswap(
     model: ModelPatcher,
     loop_index: int,
     block_swap_debug: bool = False,
+    session_id: Optional[str] = None,
 ) -> None:
     """
     Execute comprehensive cleanup between loop iterations with explicit block restoration.
@@ -171,10 +227,14 @@ def cleanup_loop_blockswap(
     ensuring that blocks are properly restored to GPU and all state is cleared for
     the next iteration. This prevents block state leakage and tensor misalignment.
 
+    When a session_id is provided, the function integrates with BlockSwapModelTracker
+    to make smart cleanup decisions based on session state.
+
     Args:
         model (ModelPatcher): The model to clean up
         loop_index (int): The index of the current loop (for logging)
         block_swap_debug (bool): Enable debug logging
+        session_id (Optional[str]): Session ID for smart cleanup decisions
 
     Raises:
         RuntimeError: If cleanup fails critically
@@ -183,9 +243,32 @@ def cleanup_loop_blockswap(
         return
 
     try:
-        # Get tracking data from model attachments
-        tracking = model.attachments.get('blockswap_tracking')
+        # Get tracker for smart cleanup decisions
+        tracker_singleton = BlockSwapModelTracker.get_instance()
+        model_id = id(model.model)
 
+        # Get session_id from tracking if not provided
+        tracking = model.attachments.get('blockswap_tracking')
+        if session_id is None and tracking is not None:
+            session_id = getattr(tracking, 'session_id', None)
+
+        # Check with tracker for cleanup decision
+        if session_id:
+            decision = tracker_singleton.get_cleanup_decision(model_id, session_id)
+
+            if decision == CleanupDecision.SKIP:
+                if block_swap_debug:
+                    print(f"[BlockSwap] Loop {loop_index+1}: Cleanup skipped (tracker decision)")
+                return
+
+            if decision == CleanupDecision.PRESERVE:
+                if block_swap_debug:
+                    print(f"[BlockSwap] Loop {loop_index+1}: Blocks preserved for next loop")
+                # Clear tracking state but DON'T move/delete blocks
+                _clear_tracking_state_only(model, loop_index, block_swap_debug)
+                return
+
+        # Continue with normal cleanup for FULL decision or no session
         if tracking is None or tracking.cleanup_executed:
             if block_swap_debug:
                 print(f"[BlockSwap] Loop {loop_index+1}: No tracking data or cleanup already executed")
@@ -420,3 +503,133 @@ def reset_model_blockswap_state(model: ModelPatcher) -> None:
 
     # Force garbage collection to ensure cleanup
     gc.collect()
+
+
+# =============================================================================
+# Private Helper Functions
+# =============================================================================
+
+
+def _clear_tracking_state_only(
+    model: ModelPatcher,
+    loop_index: int,
+    block_swap_debug: bool = False,
+) -> None:
+    """Clear tracking state without moving or deleting blocks.
+
+    This is used for PRESERVE mode where we want to clear the tracking
+    state but keep the blocks in their current locations for the next
+    loop iteration.
+
+    Args:
+        model: The model to clear tracking state for
+        loop_index: Current loop index (for logging)
+        block_swap_debug: Enable debug logging
+    """
+    tracking = model.attachments.get('blockswap_tracking')
+    if tracking is None:
+        return
+
+    # Clear indices but preserve blocks
+    tracking.swapped_indices.clear()
+    tracking.successfully_swapped_indices.clear()
+    tracking.failed_to_swap_indices.clear()
+
+    # Clear embedding tracking
+    tracking.embeddings_offloaded.clear()
+
+    # Mark as executed to prevent double-run
+    tracking.cleanup_executed = True
+
+    if block_swap_debug:
+        print(f"[BlockSwap] Loop {loop_index+1}: Tracking state cleared (blocks preserved)")
+
+
+# =============================================================================
+# Session Management Helper Functions
+# =============================================================================
+
+
+def start_blockswap_session(
+    loop_count: int = 1,
+    cleanup_mode: CleanupMode = CleanupMode.SMART,
+    block_swap_debug: bool = False,
+) -> str:
+    """Start a new BlockSwap session for multi-loop workflows.
+
+    Creates a session in the global tracker that will manage model
+    preparation and cleanup across multiple loop iterations.
+
+    Args:
+        loop_count: Expected number of loops in this workflow
+        cleanup_mode: Default cleanup mode for the session
+        block_swap_debug: Enable debug logging
+
+    Returns:
+        str: Session ID for use in subsequent calls
+    """
+    tracker = BlockSwapModelTracker.get_instance()
+    tracker.set_debug(block_swap_debug)
+
+    session_id = tracker.start_session(
+        loop_count=loop_count,
+        cleanup_mode=cleanup_mode,
+    )
+
+    if block_swap_debug:
+        print(f"[BlockSwap] Started session {session_id} for {loop_count} loops")
+
+    return session_id
+
+
+def end_blockswap_session(
+    session_id: str,
+    block_swap_debug: bool = False,
+) -> None:
+    """End a BlockSwap session and perform final cleanup.
+
+    Ends the session and cleans up all associated model states.
+    This should be called after all loops have completed.
+
+    Args:
+        session_id: Session ID to end
+        block_swap_debug: Enable debug logging
+    """
+    tracker = BlockSwapModelTracker.get_instance()
+
+    if block_swap_debug:
+        print(f"[BlockSwap] Ending session {session_id}")
+
+    tracker.end_session(session_id)
+
+    # Clean up any expired sessions while we're at it
+    expired = tracker.cleanup_expired_sessions()
+    if expired > 0 and block_swap_debug:
+        print(f"[BlockSwap] Cleaned up {expired} expired sessions")
+
+
+def update_session_loop_state(
+    session_id: str,
+    loop_index: int,
+    completed: bool = False,
+    block_swap_debug: bool = False,
+) -> None:
+    """Update session loop state.
+
+    Call this at the start of each loop to update the current loop index,
+    and at the end of each loop with completed=True to mark it done.
+
+    Args:
+        session_id: Session ID to update
+        loop_index: Current loop index (0-based)
+        completed: Whether this loop just completed
+        block_swap_debug: Enable debug logging
+    """
+    tracker = BlockSwapModelTracker.get_instance()
+
+    if not completed:
+        tracker.update_session_loop(session_id, loop_index)
+    else:
+        tracker.mark_loop_completed(session_id, loop_index)
+        if block_swap_debug:
+            print(f"[BlockSwap] Session {session_id} completed loop {loop_index + 1}")
