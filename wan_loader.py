@@ -237,6 +237,14 @@ class WANModelLoader:
             }
             model_dtype = dtype_map.get(weight_dtype, torch.float16)
 
+        # For GGUF models, ignore weight_dtype and fp8 - they're already quantized
+        if is_gguf_model:
+            if weight_dtype != "auto":
+                logger.warning("GGUF models ignore weight_dtype setting - using native GGUF quantization")
+            if fp8_optimization != "disabled":
+                logger.warning("GGUF models ignore FP8 optimization - using native GGUF quantization")
+            fp8_optimization = "disabled"  # Force disable for GGUF
+
         logger.info(f"Using dtype: {model_dtype}")
 
         # Create model
@@ -310,46 +318,32 @@ class WANModelLoader:
         skipped = 0
 
         for key, tensor in state_dict.items():
-            # Find parameter in model
-            parts = key.split('.')
-            target = model
-
             try:
-                for part in parts[:-1]:
-                    if part.isdigit():
-                        target = target[int(part)]
-                    else:
-                        target = getattr(target, part)
-
-                param_name = parts[-1]
-
                 # Check if it's a GGMLTensor (GGUF quantized)
                 is_ggml = hasattr(tensor, 'tensor_type') and tensor.tensor_type is not None
 
                 if is_ggml:
-                    # GGMLTensor - don't move, let ComfyUI-GGUF handle it
-                    if hasattr(target, param_name):
-                        setattr(target, param_name, tensor)
+                    # GGMLTensor - use comfy.utils for proper assignment
+                    try:
+                        comfy.utils.set_attr_param(model, key, tensor)
                         assigned += 1
+                    except Exception:
+                        skipped += 1
                 else:
-                    # Regular tensor - move to device
+                    # Regular tensor - move to device first
                     tensor_device = tensor.to(device)
 
                     # Apply FP8 if enabled
                     if fp8_dtype is not None and tensor_device.dtype in [torch.float16, torch.bfloat16, torch.float32]:
                         tensor_device = tensor_device.to(fp8_dtype)
 
-                    if hasattr(target, param_name):
-                        param = getattr(target, param_name)
-                        if isinstance(param, torch.nn.Parameter):
-                            param.data = tensor_device
-                        else:
-                            setattr(target, param_name, tensor_device)
+                    try:
+                        comfy.utils.set_attr_param(model, key, tensor_device)
                         assigned += 1
-                    else:
+                    except Exception:
                         skipped += 1
 
-            except (AttributeError, IndexError, KeyError):
+            except Exception:
                 skipped += 1
                 continue
 
