@@ -83,6 +83,117 @@ If you're using ComfyUI Manager, search for "Wan22Blockswap" in the available no
 
         
 
+## 📦 Available Nodes
+
+This extension provides **5 nodes** organized by purpose:
+
+### 1. WAN Model Loader ✅ **(Recommended for simple workflows)**
+
+**Category:** `WAN`
+
+A simple all-in-one WAN model loader. Loads WAN 2.1/2.2 models in safetensors or GGUF format with automatic configuration detection. No BlockSwap - just pure model loading.
+
+| Input | Type | Description |
+|-------|------|-------------|
+| `model_type` | Combo | Choose between "safetensors" or "gguf" format |
+| `safetensors_model` | Combo | Select safetensors model from diffusion_models folder |
+| `gguf_model` | Combo | Select GGUF model from diffusion_models folder |
+| `wan_version` | Combo | "auto", "2.1", or "2.2" (auto-detects from weights) |
+| `model_variant` | Combo | "auto", "t2v", "i2v", "vace", "camera", "s2v", "humo", "animate" |
+| `fp8_optimization` | Combo | FP8 quantization: "disabled", "e4m3fn", "e5m2" |
+| `weight_dtype` | Combo | Weight dtype: "auto", "fp16", "bf16", "fp32" |
+
+> **Note:** When using GGUF models, `fp8_optimization` and `weight_dtype` have no effect (GGUF models have their own quantization).
+
+**Output:** Connect to a **WAN 2.2 BlockSwap** node for VRAM optimization.
+
+---
+
+### 2. WAN 2.2 BlockSwap ✅ **(Main BlockSwap node)**
+
+**Category:** `ComfyUI_Wan22Blockswap`
+
+Apply LAZY LOADING block swapping to WAN 2.1/2.2 models. Blocks are offloaded DURING loading to prevent VRAM spikes. This is the main node for VRAM optimization.
+
+| Input | Type | Default | Description |
+|-------|------|---------|-------------|
+| `model` | MODEL | - | ComfyUI native WAN model (connect from any loader) |
+| `blocks_to_swap` | INT | 20 | Number of transformer blocks to swap to CPU |
+| `offload_txt_emb` | BOOLEAN | False | Offload text embeddings to CPU (~500MB savings) |
+| `offload_img_emb` | BOOLEAN | False | Offload image embeddings to CPU (~200MB savings) |
+| `use_non_blocking` | BOOLEAN | False | Use non-blocking memory transfers (faster) |
+| `vace_blocks_to_swap` | INT | 0 | VACE blocks to swap (0=auto detection) |
+| `prefetch_blocks` | INT | 0 | Prefetch N blocks ahead for performance |
+| `block_swap_debug` | BOOLEAN | False | Enable debug logging |
+
+**Output:** Optimized model ready for sampling.
+
+---
+
+### 3. WAN BlockSwap Model Loader ⚠️ **(Experimental - DO NOT USE)**
+
+**Category:** `ComfyUI_Wan22Blockswap`
+
+> [!CAUTION]
+> **This node is experimental and should not be used yet!** It has known issues with block cleanup that can cause CUDA/Torch errors after generation.
+
+A combined loader + BlockSwap node that routes blocks directly during weight loading. The goal is to prevent VRAM spikes by never loading swap blocks to GPU memory.
+
+**Status:** Under active development. Use the separate **WAN Model Loader** + **WAN 2.2 BlockSwap** nodes instead.
+
+---
+
+### 4. WAN22 BlockSwap Looper Models ✅ **(For WanVideoLooper)**
+
+**Category:** `ComfyUI_Wan22Blockswap/looper`
+
+Apply BlockSwap to high/low noise model pairs for WanVideoLooper integration. This node prepares both models with proper session tracking for multi-loop video generation.
+
+| Input | Type | Default | Description |
+|-------|------|---------|-------------|
+| `model_high` | MODEL | - | High-noise model for WanVideoLooper |
+| `model_low` | MODEL | - | Low-noise model for WanVideoLooper |
+| `blocks_to_swap` | INT | 20 | Blocks to swap to CPU |
+| `offload_txt_emb` | BOOLEAN | False | Offload text embeddings |
+| `offload_img_emb` | BOOLEAN | False | Offload image embeddings |
+| `use_non_blocking` | BOOLEAN | False | Non-blocking transfers |
+| `vace_blocks_to_swap` | INT | 0 | VACE blocks to swap |
+| `prefetch_blocks` | INT | 0 | Prefetch blocks |
+| `block_swap_debug` | BOOLEAN | False | Debug logging |
+
+**Outputs:** `model_high`, `model_low` - Connect directly to WanVideoLooper's model inputs.
+
+---
+
+### 5. WAN22 BlockSwap Sequencer ✅ **(For WanVideoLoraSequencer)**
+
+**Category:** `ComfyUI_Wan22Blockswap/looper`
+
+Apply BlockSwap to WanVideoLoraSequencer output for per-segment BlockSwap with different LoRAs. Takes a list of (model_high, model_low, clip) tuples and applies BlockSwap to each model.
+
+| Input | Type | Default | Description |
+|-------|------|---------|-------------|
+| `model_clip_sequence` | ANY | - | Output from WanVideoLoraSequencer |
+| `blocks_to_swap` | INT | 20 | Blocks to swap to CPU |
+| `offload_txt_emb` | BOOLEAN | False | Offload text embeddings |
+| `offload_img_emb` | BOOLEAN | False | Offload image embeddings |
+| `use_non_blocking` | BOOLEAN | False | Non-blocking transfers |
+| `vace_blocks_to_swap` | INT | 0 | VACE blocks to swap |
+| `prefetch_blocks` | INT | 0 | Prefetch blocks |
+| `block_swap_debug` | BOOLEAN | False | Debug logging |
+
+**Output:** `model_clip_sequence` - Connect to WanVideoLooper's model_clip_sequence input.
+
+**Workflow:**
+1. Load models with WAN Model Loader
+2. Use WanVideoLoraSequencer to assign per-segment LoRAs
+3. Connect sequencer output to this node
+4. Connect this node's output to WanVideoLooper
+
+---
+
+        
+
 # 🎯 Usage
 
 ### Basic Usage
