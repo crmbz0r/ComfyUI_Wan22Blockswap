@@ -132,66 +132,236 @@ def lazy_load_callback(
 
 def _wrap_unpatch_model(model_patcher: Any, block_swap_debug: bool = False) -> None:
     """
-    Wrap the model patcher's unpatch_model method to restore blocks first.
+    Wrap the model patcher's unpatch_model method to handle GGUF safely.
     
     When ComfyUI unloads a model (to free VRAM for another model), it calls
-    unpatch_model which tries to move the ENTIRE model to CPU. But BlockSwap
-    has already moved some blocks to CPU, and GGUF tensors fail when you try
-    to move them to CPU when they're already on CPU.
+    unpatch_model which tries to move the ENTIRE model to CPU. But GGUF 
+    tensors fail when you try to move them between devices.
     
-    This wrapper restores all swapped blocks to GPU BEFORE unpatch_model runs,
-    ensuring the model is in a consistent state.
+    This wrapper:
+    1. For GGUF models: Restores any swapped blocks to GPU, then lets ComfyUI-GGUF
+       handle the unpatch with special GGUF-aware logic
+    2. For native models: Restores swapped blocks to GPU before unpatch
+    
+    The key insight is that GGUF's GGMLTensor.to() method can fail with
+    "CUDA error: invalid argument" when moving to the same device or when
+    the tensor is in an inconsistent state.
     """
-    # Store the original method
+    # Check if already wrapped to prevent double-wrapping
+    if hasattr(model_patcher, '_blockswap_unpatch_wrapped'):
+        if block_swap_debug:
+            print("[BlockSwap] unpatch_model already wrapped, skipping")
+        return
+    
+    # Store the original method - keep a backup so we can always restore
     original_unpatch = model_patcher.unpatch_model
+    model_patcher._blockswap_original_unpatch = original_unpatch
     
     def wrapped_unpatch_model(device_to=None, unpatch_weights=True):
-        """Restore blocks to GPU before unpatching."""
+        """Safe unpatch that handles GGUF and BlockSwap state."""
         tracking = model_patcher.attachments.get('blockswap_tracking')
+        is_gguf = False
         
-        if tracking is not None and not getattr(tracking, 'blocks_restored', False):
-            successfully_swapped = getattr(tracking, 'successfully_swapped_indices', [])
+        if tracking is not None:
             is_gguf = getattr(tracking, 'is_gguf_model', False)
+            blocks_restored = getattr(tracking, 'blocks_restored', False)
+            successfully_swapped = getattr(tracking, 'successfully_swapped_indices', [])
             
-            if len(successfully_swapped) > 0:
+            # Restore any swapped blocks to GPU before unpatch
+            if not blocks_restored and len(successfully_swapped) > 0:
                 if block_swap_debug:
                     print(f"[BlockSwap] PRE-UNPATCH: Restoring {len(successfully_swapped)} blocks to GPU")
                 
-                # Get the UNet
                 base_model = model_patcher.model
                 unet = BlockManager.get_unet_from_model(base_model)
                 
                 if unet is not None and hasattr(unet, 'blocks'):
                     main_device = torch.device('cuda')
                     restored = 0
+                    skipped = 0
                     
                     for block_idx in successfully_swapped:
                         try:
                             if block_idx < len(unet.blocks):
-                                # Move block back to GPU before unpatch
-                                unet.blocks[block_idx].to(main_device, non_blocking=False)
+                                block = unet.blocks[block_idx]
+                                
+                                # Check if block is already on GPU to avoid GGUF errors
+                                current_device = None
+                                try:
+                                    for param in block.parameters():
+                                        current_device = param.device
+                                        break
+                                except (StopIteration, RuntimeError):
+                                    pass
+                                
+                                if current_device is not None and current_device.type == 'cuda':
+                                    # Already on GPU, skip the move
+                                    skipped += 1
+                                    continue
+                                
+                                block.to(main_device, non_blocking=False)
                                 restored += 1
                         except Exception as e:
                             if block_swap_debug:
                                 print(f"[BlockSwap] PRE-UNPATCH: Block {block_idx} restore failed: {str(e)[:50]}")
                     
                     if block_swap_debug:
-                        print(f"[BlockSwap] PRE-UNPATCH: Restored {restored}/{len(successfully_swapped)} blocks to GPU")
+                        if skipped > 0:
+                            print(f"[BlockSwap] PRE-UNPATCH: Restored {restored}, skipped {skipped} (already on GPU)")
+                        else:
+                            print(f"[BlockSwap] PRE-UNPATCH: Restored {restored}/{len(successfully_swapped)} blocks")
                     
-                    # Sync to ensure all moves complete
-                    torch.cuda.synchronize()
+                    # Sync to ensure moves complete
+                    if torch.cuda.is_available():
+                        torch.cuda.synchronize()
                 
-                # Mark as restored so we don't do this twice
                 tracking.blocks_restored = True
         
-        # Call original unpatch method
-        return original_unpatch(device_to=device_to, unpatch_weights=unpatch_weights)
+        # Clear tracking attachment to allow proper model release
+        # This is critical for the "clear cache" button to work
+        if 'blockswap_tracking' in model_patcher.attachments:
+            del model_patcher.attachments['blockswap_tracking']
+        
+        # For GGUF models, we need special handling
+        if is_gguf:
+            if block_swap_debug:
+                print("[BlockSwap] GGUF model detected - using safe unpatch")
+            
+            try:
+                # Try calling the original unpatch
+                result = original_unpatch(device_to=device_to, unpatch_weights=unpatch_weights)
+                # Restore original unpatch method after successful call
+                model_patcher.unpatch_model = original_unpatch
+                return result
+            except Exception as e:
+                error_str = str(e)
+                if "invalid argument" in error_str.lower() or "cuda" in error_str.lower():
+                    # GGUF-specific error - try to recover
+                    if block_swap_debug:
+                        print(f"[BlockSwap] GGUF unpatch failed: {error_str[:80]}")
+                        print("[BlockSwap] Attempting recovery - skipping problematic .to() calls")
+                    
+                    # Perform a minimal unpatch that skips the problematic model.to() call
+                    try:
+                        _safe_gguf_unpatch(model_patcher, device_to, unpatch_weights, block_swap_debug)
+                        # Restore original unpatch method
+                        model_patcher.unpatch_model = original_unpatch
+                        return model_patcher.model
+                    except Exception as recovery_error:
+                        if block_swap_debug:
+                            print(f"[BlockSwap] Recovery also failed: {str(recovery_error)[:80]}")
+                        # Restore original unpatch method even on failure
+                        model_patcher.unpatch_model = original_unpatch
+                        # Re-raise the original error
+                        raise e
+                else:
+                    # Non-GGUF error, restore and re-raise
+                    model_patcher.unpatch_model = original_unpatch
+                    raise
+        else:
+            # Native model - call original and restore
+            result = original_unpatch(device_to=device_to, unpatch_weights=unpatch_weights)
+            model_patcher.unpatch_model = original_unpatch
+            return result
     
-    # Replace the method
+    # Replace the method and mark as wrapped
     model_patcher.unpatch_model = wrapped_unpatch_model
+    model_patcher._blockswap_unpatch_wrapped = True
     
     if block_swap_debug:
         print("[BlockSwap] Wrapped unpatch_model for safe GGUF unloading")
+
+
+def _safe_gguf_unpatch(model_patcher: Any, device_to: Any, unpatch_weights: bool, block_swap_debug: bool) -> None:
+    """
+    Perform a safe unpatch for GGUF models that skips problematic .to() calls.
+    
+    This is a minimal implementation that does the essential cleanup without
+    the model.to(device_to) call that causes CUDA errors with GGUF tensors.
+    """
+    if block_swap_debug:
+        print("[BlockSwap] Performing safe GGUF unpatch (skipping model.to())")
+    
+    # Call eject_model if available (unhooks the model)
+    if hasattr(model_patcher, 'eject_model'):
+        try:
+            model_patcher.eject_model()
+        except Exception as e:
+            if block_swap_debug:
+                print(f"[BlockSwap] eject_model failed (non-critical): {str(e)[:50]}")
+    
+    if unpatch_weights:
+        # Unpatch hooks if available
+        if hasattr(model_patcher, 'unpatch_hooks'):
+            try:
+                model_patcher.unpatch_hooks()
+            except Exception as e:
+                if block_swap_debug:
+                    print(f"[BlockSwap] unpatch_hooks failed (non-critical): {str(e)[:50]}")
+        
+        # Unpin weights if available
+        if hasattr(model_patcher, 'unpin_all_weights'):
+            try:
+                model_patcher.unpin_all_weights()
+            except Exception as e:
+                if block_swap_debug:
+                    print(f"[BlockSwap] unpin_all_weights failed (non-critical): {str(e)[:50]}")
+        
+        # Handle lowvram state
+        if hasattr(model_patcher.model, 'model_lowvram') and model_patcher.model.model_lowvram:
+            # Skip the module iteration that does .to() - this is what causes the CUDA error
+            model_patcher.model.model_lowvram = False
+            model_patcher.model.lowvram_patch_counter = 0
+        
+        # Restore backup weights if any
+        if hasattr(model_patcher, 'backup'):
+            keys = list(model_patcher.backup.keys())
+            for k in keys:
+                try:
+                    bk = model_patcher.backup[k]
+                    if hasattr(bk, 'inplace_update') and bk.inplace_update:
+                        import comfy.utils
+                        comfy.utils.copy_to_param(model_patcher.model, k, bk.weight)
+                    else:
+                        import comfy.utils
+                        comfy.utils.set_attr_param(model_patcher.model, k, bk.weight)
+                except Exception as e:
+                    if block_swap_debug:
+                        print(f"[BlockSwap] backup restore failed for {k}: {str(e)[:30]}")
+            model_patcher.backup.clear()
+        
+        # Clear object patches backup
+        if hasattr(model_patcher, 'object_patches_backup'):
+            for k in list(model_patcher.object_patches_backup.keys()):
+                try:
+                    import comfy.utils
+                    comfy.utils.set_attr(model_patcher.model, k, model_patcher.object_patches_backup[k])
+                except Exception:
+                    pass
+            model_patcher.object_patches_backup.clear()
+    
+    # Clear any blockswap attachments to allow proper model release
+    if 'blockswap_tracking' in model_patcher.attachments:
+        del model_patcher.attachments['blockswap_tracking']
+    
+    # Restore original unpatch method if we have it
+    if hasattr(model_patcher, '_blockswap_original_unpatch'):
+        model_patcher.unpatch_model = model_patcher._blockswap_original_unpatch
+        delattr(model_patcher, '_blockswap_original_unpatch')
+    
+    # Remove the unpatch wrapper flag so model can be fully released
+    if hasattr(model_patcher, '_blockswap_unpatch_wrapped'):
+        delattr(model_patcher, '_blockswap_unpatch_wrapped')
+    
+    # Force GPU sync and cache clear
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
+        torch.cuda.empty_cache()
+    
+    gc.collect()
+    
+    if block_swap_debug:
+        print("[BlockSwap] Safe GGUF unpatch complete")
 
 
 def cleanup_callback(model_patcher: Any) -> None:
@@ -348,6 +518,20 @@ def cleanup_callback(model_patcher: Any) -> None:
         # Mark cleanup done in tracker if session active
         if session_id:
             tracker.mark_cleanup_done(model_patcher)
+        
+        # CRITICAL: Clear the tracking attachment to allow model to be freed
+        # This is what allows the "clear cache" button to work
+        if 'blockswap_tracking' in model_patcher.attachments:
+            del model_patcher.attachments['blockswap_tracking']
+        
+        # Restore original unpatch method if we wrapped it
+        if hasattr(model_patcher, '_blockswap_original_unpatch'):
+            model_patcher.unpatch_model = model_patcher._blockswap_original_unpatch
+            delattr(model_patcher, '_blockswap_original_unpatch')
+        
+        # Remove unpatch wrapper flag
+        if hasattr(model_patcher, '_blockswap_unpatch_wrapped'):
+            delattr(model_patcher, '_blockswap_unpatch_wrapped')
 
     except Exception as e:
         print(f"[BlockSwap] CRITICAL ERROR in cleanup_callback: {str(e)}")

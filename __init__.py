@@ -5,6 +5,7 @@ system, making them available when the package is imported. It provides
 a clean interface for accessing the functionality.
 
 Includes:
+- WANModelLoader: Simple all-in-one WAN model loader (no BlockSwap)
 - wan22BlockSwap: Dynamic block swapping via ON_LOAD callbacks
 - WAN22BlockSwapLoader: Loader with integrated pre-routing (prevents VRAM spikes)
 - WAN22BlockSwapLooperModels: Multi-loop integration for high/low model pairs
@@ -24,11 +25,16 @@ from .blockswap_looper import (
     WAN22BlockSwapLooperModels,
     WAN22BlockSwapSequencer,
 )
+from .wan_loader import (
+    NODE_CLASS_MAPPINGS as _WAN_LOADER_MAPPINGS,
+    NODE_DISPLAY_NAME_MAPPINGS as _WAN_LOADER_DISPLAY_MAPPINGS,
+    WANModelLoader,
+)
 from .config import BlockSwapConfig
 
 # Merge node mappings from all modules
-NODE_CLASS_MAPPINGS = {**_NODES_MAPPINGS, **_LOADER_MAPPINGS, **_LOOPER_MAPPINGS}
-NODE_DISPLAY_NAME_MAPPINGS = {**_NODES_DISPLAY_MAPPINGS, **_LOADER_DISPLAY_MAPPINGS, **_LOOPER_DISPLAY_MAPPINGS}
+NODE_CLASS_MAPPINGS = {**_NODES_MAPPINGS, **_LOADER_MAPPINGS, **_LOOPER_MAPPINGS, **_WAN_LOADER_MAPPINGS}
+NODE_DISPLAY_NAME_MAPPINGS = {**_NODES_DISPLAY_MAPPINGS, **_LOADER_DISPLAY_MAPPINGS, **_LOOPER_DISPLAY_MAPPINGS, **_WAN_LOADER_DISPLAY_MAPPINGS}
 from .block_manager import BlockManager, BlockSwapTracker
 from .callbacks import lazy_load_callback, cleanup_callback
 from .utils import log_debug, sync_gpu, clear_device_caches
@@ -53,6 +59,7 @@ from .looper_helpers import (
 __all__ = [
     "NODE_CLASS_MAPPINGS",           # ComfyUI node registration mappings
     "NODE_DISPLAY_NAME_MAPPINGS",    # ComfyUI node display names
+    "WANModelLoader",                # Simple all-in-one WAN model loader
     "WAN22BlockSwapLoader",          # Loader with integrated pre-routing
     "WAN22BlockSwapLooperModels",    # Looper for high/low model pairs
     "WAN22BlockSwapSequencer",       # Looper for LoRA sequences

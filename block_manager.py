@@ -77,6 +77,16 @@ class BlockManager:
         return swap_start_idx, actual_blocks_to_swap
 
     @staticmethod
+    def _get_block_device(block: Any) -> Optional[torch.device]:
+        """Get the device of a block by checking its first parameter."""
+        try:
+            for param in block.parameters():
+                return param.device
+        except (StopIteration, RuntimeError):
+            pass
+        return None
+
+    @staticmethod
     def swap_transformer_blocks(
         unet: Any,
         swap_start_idx: int,
@@ -89,6 +99,9 @@ class BlockManager:
     ) -> Tuple[int, int, int]:
         """
         Swap transformer blocks from GPU to CPU.
+
+        Handles the case where blocks may already be on the target device
+        (from a previous run), which causes GGUF tensors to throw errors.
 
         Args:
             unet: The UNet model containing the blocks
@@ -117,14 +130,38 @@ class BlockManager:
                 if b < swap_start_idx:
                     # Keep on GPU - load directly to GPU
                     target_device = main_device
+                    
+                    # Check if block is already on target device
+                    current_device = BlockManager._get_block_device(block)
+                    if current_device is not None and current_device.type == target_device.type:
+                        # Already on correct device, skip the move
+                        gpu_blocks += 1
+                        continue
+                    
+                    # Block is on CPU (from previous run), move to GPU
+                    if current_device is not None and current_device.type == 'cpu':
+                        if block_swap_debug and b == 0:  # Log first block only
+                            print(f"[BlockSwap] Blocks starting on CPU (restoring to GPU from previous run)")
+                    
                     block.to(target_device, non_blocking=use_non_blocking)
                     gpu_blocks += 1
                 else:
                     # Offload to CPU - load directly to CPU
                     target_device = offload_device
 
-                    # For already-loaded blocks, move them
-                    # For not-yet-loaded, they'll load to CPU
+                    # Check if block is already on target device (CPU)
+                    current_device = BlockManager._get_block_device(block)
+                    if current_device is not None and current_device.type == 'cpu':
+                        # Already on CPU - just track it without moving
+                        if block_swap_debug and b == swap_start_idx:  # Log first swap block only
+                            print(f"[BlockSwap] Blocks {swap_start_idx}+ already on CPU, tracking without move")
+                        cpu_blocks += 1
+                        tracking.swapped_indices.append(b)
+                        tracking.successfully_swapped_indices.append(b)
+                        tracking.swapped_blocks_refs[b] = block
+                        continue
+
+                    # Actually move the block to CPU
                     block.to(target_device, non_blocking=use_non_blocking)
                     cpu_blocks += 1
 
@@ -143,7 +180,7 @@ class BlockManager:
                 if block_swap_debug:
                     error_msg = str(e)
                     if "invalid argument" in error_msg.lower():
-                        print(f"[BlockSwap] Block {b} - GGUF quantized, skipping")
+                        print(f"[BlockSwap] Block {b} - GGUF move error, skipping")
                     else:
                         print(f"[BlockSwap] Block {b} - Error: {error_msg[:80]}")
                 continue
