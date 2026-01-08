@@ -7,6 +7,9 @@
 [![Python](https://img.shields.io/badge/Python-3.8+-blue.svg)](https://python.org)
 
 ---
+>[!CAUTION]
+>
+>GENERATION IS STILL A BIT BUGGED AND BROKEN, CAUSING A CUDA ERROR AFTER ~3 GENERATION RUNS. BUT I AM WORKING ON FIXING IT ATM.
 
 ## 🚀 Overview
 
