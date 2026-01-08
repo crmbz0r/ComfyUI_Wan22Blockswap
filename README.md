@@ -1,4 +1,4 @@
-# ComfyUI-Wan22Blockswap
+# ComfyUI_Wan22Blockswap
 
 ### **VRAM Optimization for WAN 2.1/2.2 with BlockSwap Forward Patching**
 
@@ -252,38 +252,6 @@ ComfyUI_Wan22Blockswap/
 | `BlockSwapForwardPatcher` | Core logic for patching forward methods |
 | `BlockManager` | Manages block state and device placement |
 | `BlockSwapTracker` | Tracks which blocks are swapped for cleanup |
-
----
-
-## 🔄 Workflow Examples
-
-### Example 1: Integrated KSampler (Simple)
-
-```
-[GGUF Loader High] ──┐
-                     ├──→ [Combo Patcher] → model_high/low → [Integrated KSampler]
-[GGUF Loader Low] ───┘                                              ↓
-                                                               [VAE Decode]
-[Full Cleanup] ← filenames ← [Video Combine] ← images ──────────────┘
-```
-
-### Example 2: WanVideoLooper (Multi-loop)
-
-```
-[GGUF Loader High] ──┐
-                     ├──→ [Combo Patcher] → model_high/low → [WanVideoLooper]
-[GGUF Loader Low] ───┘                                              ↓
-                                                                  images
-[Full Cleanup] ← filenames ← [Video Combine] ←──────────────────────┘
-```
-
-### Example 3: Single Model (No Guidance Distillation)
-
-```
-[GGUF Loader] → [BlockSwap Patcher] → model → [KSampler] → [VAE Decode]
-                                                                  ↓
-[Full Cleanup] ←──────────────────────────────────────────── images
-```
 
 ---
 
