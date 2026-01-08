@@ -135,11 +135,12 @@ For guidance distillation workflows (HIGH noise → LOW noise models):
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `model` | MODEL | Required | Model to clean up |
-| `latent` | LATENT | Optional | Latent pass-through (Integrated KSampler) |
-| `images` | IMAGE | Optional | Image pass-through (WanVideoLooper) |
+| `latent` | LATENT | Optional* | Latent pass-through (Integrated KSampler) |
+| `images` | IMAGE | Optional* | Image pass-through (WanVideoLooper) |
 | `move_to_cpu` | BOOL | True | Move all blocks to CPU |
 | `unpatch` | BOOL | False | Remove BlockSwap patches entirely |
 | `clear_cache` | BOOL | True | Clear CUDA cache and run GC |
+* Use at least one of the latent or image input since they function as signal inputs to start cleaning after the KSampler is finished
 
 ---
 
