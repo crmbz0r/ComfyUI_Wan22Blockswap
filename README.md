@@ -293,10 +293,12 @@ ComfyUI_Wan22Blockswap/
 - ✅ **WanVideoLooper Support**: Works with multi-loop workflows
 - 🗑️ **Deprecated**: Old callback-based nodes (code preserved)
 
-### v0.x (Previous)
+### v0.0.1 (Previous)
 
 - Initial development with ON_LOAD callback approach
-- Various experimental loaders and patchers
+- Various experimental loaders and patchers that didn't really work as intended
+- Realization that ComfyUI's core mechanics do not like external blockswap nodes
+- Despair and on the verge of losing hope
 
 ---
 
